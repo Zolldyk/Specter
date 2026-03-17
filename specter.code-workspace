@@ -1,0 +1,18 @@
+{
+  "folders": [
+    {
+      "name": "specter",
+      "path": "."
+    },
+    {
+      "path": "../Downloads/gigahorse-skanf-main"
+    },
+    {
+      "path": "../Downloads/greed-skanf-main"
+    },
+    {
+      "path": "../Downloads/skanf-main"
+    }
+  ],
+  "settings": {}
+}

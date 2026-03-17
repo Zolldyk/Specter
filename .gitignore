@@ -8,3 +8,9 @@ wheels/
 
 # Virtual environments
 .venv
+
+# BMAD and agent tooling
+_bmad/
+_bmad-output/
+.agents/
+.claude/
