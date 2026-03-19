@@ -39,6 +39,7 @@ class SkfnOutput(BaseModel):
     state: SkfnState
     raw_output: str  # complete SKANF stdout for downstream parsing
     container_exit_code: int
+    vulnerability_json: str = "[]"  # raw vulnerability.json content; populated by runner.py
 
 
 def _normalize_hex(v: str) -> str:
@@ -58,15 +59,67 @@ def _normalize_address_eip55(v: str) -> str:
 
 
 class SkfnContext(BaseModel):
-    """Parsed SKANF Figure 3 output."""
+    """Parsed SKANF output — fields derived from actual container inspection (Story 2.1).
+
+    Field population sources:
+      - contract_address: caller-supplied (EIP-55 checksummed)
+      - raw_output: combined stdout+stderr from the full two-phase SKANF pipeline
+      - call_pc: key_statement from vulnerability.json (TAC statement ID, e.g. "0x76")
+      - vulnerability_type: vulnerability_type from vulnerability.json (e.g. "ArbitraryCall")
+      - confidence: confidence from vulnerability.json ("HIGH" / "MEDIUM" / "LOW")
+      - key_selector: key_selector from vulnerability.json (4-byte fn selector, 0x-prefixed)
+      - calldata: CALLDATA value from greed log line; None means stall (target symbolic)
+
+    Fields NOT present in actual SKANF output (paper Figure 3 only — reserved for future):
+      - tainted_bytes: greed internal solver state, not logged to stdout/stderr
+      - controllability_flags: greed internal solver state, not logged
+      - block_height: only available when WEB3_PROVIDER is configured
+      - token_balance: symbolic in greed (BALANCE_<xid>), not serialized to output
+    """
 
     contract_address: str
     raw_output: str
+
+    # From vulnerability.json (Phase 1 Gigahorse output) — None if clean/no detection
+    call_pc: str | None = None
+    vulnerability_type: str | None = None
+    confidence: str | None = None
+    key_selector: str | None = None
+
+    # From greed log (Phase 2 symbolic execution) — None means stall
+    calldata: str | None = None
+
+    # Paper Figure 3 fields — NOT present in actual SKANF output; reserved for future use
+    tainted_bytes: list[int] | None = None
+    controllability_flags: dict[str, bool] | None = None
+    block_height: int | None = None
+    token_balance: str | None = None
 
     @field_validator("contract_address", mode="before")
     @classmethod
     def normalize_address(cls, v: str) -> str:
         return _normalize_address_eip55(v)
+
+    @field_validator("call_pc", mode="before")
+    @classmethod
+    def normalize_call_pc(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        return _normalize_hex(v)
+
+    @field_validator("key_selector", mode="before")
+    @classmethod
+    def normalize_key_selector(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        return _normalize_hex(v)
+
+    @field_validator("calldata", mode="before")
+    @classmethod
+    def normalize_calldata(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        return _normalize_hex(v)
 
 
 class AgentCalldata(BaseModel):

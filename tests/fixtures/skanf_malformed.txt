@@ -1,0 +1,14 @@
+# SKANF MALFORMED OUTPUT FIXTURE (SYNTHETIC)
+# This fixture represents corrupted, truncated, or otherwise unexpected SKANF output.
+# The parser (Story 2.4) MUST fail loudly (raise an error) when it encounters this.
+# Scenarios: container OOM-killed mid-run, disk full during analysis, corrupt hex input.
+Running gigahorse.py
+ERROR: Unexpected error during decompilation
+Traceback (most recent call last):
+  File "/opt/greed/gigahorse-toolchain/gigahorse.py", line 142, in run_gigahorse
+    subprocess.check_call(cmd, timeout=timeout)
+  File "/opt/conda/envs/greed/lib/python3.12/subprocess.py", line 413, in check_call
+    raise CalledProcessError(retcode, cmd)
+subprocess.CalledProcessError: Command returned non-zero exit status 137
+FATAL | greed | Analysis pipeline terminated unexpectedly
+{"vulnerability_type": "ArbitraryCall", "confidence": "HIGH",

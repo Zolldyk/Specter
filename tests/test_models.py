@@ -1,4 +1,4 @@
-"""Tests for src/specter/models.py — Story 1.2: Core Data Models."""
+"""Tests for src/specter/models.py — Story 1.2: Core Data Models + Story 2.1: SkfnContext expansion."""
 from __future__ import annotations
 
 import pytest
@@ -273,6 +273,149 @@ def test_validationresult_rejects_inconsistent_tier_status() -> None:
 
 def test_validationresult_tier_to_status_mapping_is_complete() -> None:
     assert set(_TIER_TO_STATUS.keys()) == set(ValidationTier)
+
+
+# ---------------------------------------------------------------------------
+# SkfnContext expanded fields (Story 2.1 — real SKANF output inspection)
+# ---------------------------------------------------------------------------
+
+
+def test_skfncontext_minimal_construction_still_works() -> None:
+    """Existing callers with only contract_address+raw_output must not break."""
+    ctx = SkfnContext(
+        contract_address="0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe",
+        raw_output="Running gigahorse.py\nYes\n",
+    )
+    assert ctx.call_pc is None
+    assert ctx.vulnerability_type is None
+    assert ctx.confidence is None
+    assert ctx.key_selector is None
+    assert ctx.calldata is None
+    assert ctx.tainted_bytes is None
+    assert ctx.controllability_flags is None
+    assert ctx.block_height is None
+    assert ctx.token_balance is None
+
+
+def test_skfncontext_call_pc_normalizes_hex() -> None:
+    ctx = SkfnContext(
+        contract_address="0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe",
+        raw_output="...",
+        call_pc="76",  # no 0x prefix
+    )
+    assert ctx.call_pc == "0x76"
+
+
+def test_skfncontext_call_pc_normalizes_uppercase() -> None:
+    ctx = SkfnContext(
+        contract_address="0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe",
+        raw_output="...",
+        call_pc="0X76",
+    )
+    assert ctx.call_pc == "0x76"
+
+
+def test_skfncontext_call_pc_none_passes_through() -> None:
+    ctx = SkfnContext(
+        contract_address="0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe",
+        raw_output="...",
+        call_pc=None,
+    )
+    assert ctx.call_pc is None
+
+
+def test_skfncontext_key_selector_normalizes_hex() -> None:
+    ctx = SkfnContext(
+        contract_address="0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe",
+        raw_output="...",
+        key_selector="1CFF79CD",  # uppercase, no 0x
+    )
+    assert ctx.key_selector == "0x1cff79cd"
+
+
+def test_skfncontext_calldata_normalizes_hex() -> None:
+    ctx = SkfnContext(
+        contract_address="0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe",
+        raw_output="...",
+        calldata="1CFF79CD0000",  # uppercase, no 0x
+    )
+    assert ctx.calldata == "0x1cff79cd0000"
+
+
+def test_skfncontext_calldata_none_means_stall() -> None:
+    ctx = SkfnContext(
+        contract_address="0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe",
+        raw_output="INFO | greed.TAC.flow_ops | Calling contract <SYMBOLIC> (134_1)",
+        call_pc="0x76",
+        vulnerability_type="ArbitraryCall",
+        calldata=None,
+    )
+    assert ctx.calldata is None
+
+
+def test_skfncontext_full_success_fields() -> None:
+    ctx = SkfnContext(
+        contract_address="0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe",
+        raw_output="INFO | greed | Found State 7 at 0x76\nINFO | greed | CALLDATA: 1cff79cd0000",
+        call_pc="0x76",
+        vulnerability_type="ArbitraryCall",
+        confidence="HIGH",
+        key_selector="0x1cff79cd",
+        calldata="1cff79cd0000",
+    )
+    assert ctx.call_pc == "0x76"
+    assert ctx.vulnerability_type == "ArbitraryCall"
+    assert ctx.confidence == "HIGH"
+    assert ctx.key_selector == "0x1cff79cd"
+    assert ctx.calldata == "0x1cff79cd0000"
+    # Paper fields stay None when not set
+    assert ctx.tainted_bytes is None
+    assert ctx.controllability_flags is None
+    assert ctx.block_height is None
+    assert ctx.token_balance is None
+
+
+def test_skfncontext_optional_paper_fields_accept_values() -> None:
+    """Reserved paper-fields (tainted_bytes, etc.) accept values when provided."""
+    ctx = SkfnContext(
+        contract_address="0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe",
+        raw_output="...",
+        tainted_bytes=[0, 4, 8],
+        controllability_flags={"arg0": True, "arg1": False},
+        block_height=19500000,
+        token_balance="1500000000000000000",
+    )
+    assert ctx.tainted_bytes == [0, 4, 8]
+    assert ctx.controllability_flags == {"arg0": True, "arg1": False}
+    assert ctx.block_height == 19500000
+    assert ctx.token_balance == "1500000000000000000"
+
+
+def test_skfncontext_contract_address_still_checksummed_with_new_fields() -> None:
+    ctx = SkfnContext(
+        contract_address="de0b295669a9fd93d5f28d9ec85e40f4cb697bae",
+        raw_output="...",
+        call_pc="0x76",
+    )
+    assert ctx.contract_address == "0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe"
+
+
+def test_skfncontext_confidence_accepts_any_string_by_design() -> None:
+    """confidence is an unvalidated str — any string is accepted (not an enum).
+    Parser (Story 2.4) is responsible for mapping greed output to HIGH/MEDIUM/LOW.
+    This test documents the 'any string allowed' decision explicitly.
+    """
+    ctx = SkfnContext(
+        contract_address="0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe",
+        raw_output="...",
+        confidence="BOGUS_VALUE",
+    )
+    assert ctx.confidence == "BOGUS_VALUE"
+
+
+def test_skfncontext_rejects_invalid_contract_address() -> None:
+    with pytest.raises(Exception):  # eth_utils raises ValueError or similar
+        SkfnContext(contract_address="not_an_address", raw_output="some output")
 
 
 # ---------------------------------------------------------------------------
