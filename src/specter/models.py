@@ -127,6 +127,7 @@ class AgentCalldata(BaseModel):
 
     calldata: str
     target_address: str
+    value: int = 0
     caller: str
     origin: str
 
@@ -143,8 +144,8 @@ class AgentCalldata(BaseModel):
 
 _TIER_TO_STATUS: dict[ValidationTier, ValidationStatus] = {
     ValidationTier.FULL_SUCCESS: ValidationStatus.VALIDATED_EXPLOIT,
-    ValidationTier.PARTIAL_SUCCESS: ValidationStatus.SKANF_DETECTED_UNEXPLOITED,
-    ValidationTier.FAILURE: ValidationStatus.CLEAN,
+    ValidationTier.PARTIAL_SUCCESS: ValidationStatus.AGENT_PROPOSED_UNVALIDATED,
+    ValidationTier.FAILURE: ValidationStatus.SKANF_DETECTED_UNEXPLOITED,
 }
 
 

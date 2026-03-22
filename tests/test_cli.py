@@ -330,11 +330,12 @@ class TestScanCleanState:
         result = runner.invoke(app, ["scan", VALID_ADDRESS])
         assert "clean" in result.stderr
 
-    def test_clean_state_no_json_on_stdout_by_default(self, monkeypatch):
+    def test_clean_state_markdown_on_stdout_by_default(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
         monkeypatch.setattr("specter.cli.run_skanf", _mock_run_skanf_returning(SkfnState.CLEAN))
         result = runner.invoke(app, ["scan", VALID_ADDRESS])
-        assert result.stdout == ""
+        assert "# Specter Scan Report" in result.stdout
+        assert "## Finding: NO VULNERABILITY DETECTED" in result.stdout
 
     def test_clean_state_json_flag_outputs_validated_status(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
@@ -389,19 +390,21 @@ class TestScanExploitGeneratedState:
 
 
 class TestScanOutputFlag:
-    """--output flag writes JSON to file for terminal states."""
+    """--output flag writes markdown report to file for terminal states."""
 
-    def test_clean_state_writes_json_to_output_file(self, monkeypatch, tmp_path):
-        output_file = tmp_path / "result.json"
+    def test_clean_state_writes_markdown_to_output_file(self, monkeypatch, tmp_path):
+        output_file = tmp_path / "result.md"
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
         monkeypatch.setattr("specter.cli.run_skanf", _mock_run_skanf_returning(SkfnState.CLEAN))
         result = runner.invoke(app, ["scan", "--output", str(output_file), VALID_ADDRESS])
         assert result.exit_code == 0
         assert output_file.exists()
-        assert "clean" in output_file.read_text()
+        content = output_file.read_text()
+        assert "# Specter Scan Report" in content
+        assert "NO VULNERABILITY DETECTED" in content
 
-    def test_exploit_generated_writes_json_to_output_file(self, monkeypatch, tmp_path):
-        output_file = tmp_path / "result.json"
+    def test_exploit_generated_writes_markdown_to_output_file(self, monkeypatch, tmp_path):
+        output_file = tmp_path / "result.md"
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
         monkeypatch.setattr(
             "specter.cli.run_skanf",
@@ -410,38 +413,86 @@ class TestScanOutputFlag:
         result = runner.invoke(app, ["scan", "--output", str(output_file), VALID_ADDRESS])
         assert result.exit_code == 1
         assert output_file.exists()
-        assert "validated_exploit" in output_file.read_text()
+        content = output_file.read_text()
+        assert "# Specter Scan Report" in content
+        assert "CONFIRMED VULNERABILITY" in content
 
 
-from specter.models import SkfnContext  # noqa: E402
+from specter.models import AgentCalldata, SkfnContext, ValidationResult, ValidationStatus, ValidationTier  # noqa: E402
 
 MOCK_CONTEXT = SkfnContext(
     contract_address="0xDeadDeadDeadDeadDeadDeadDeadDeadDeadDead",
     raw_output=STALL_RAW,
 )
 
+MOCK_AGENT_CALLDATA = AgentCalldata(
+    calldata="0x1cff79cd",
+    target_address="0x" + "a" * 40,
+    caller="0x" + "0" * 40,
+    origin="0x" + "0" * 40,
+)
+
+MOCK_VALIDATION_RESULT_PARTIAL = ValidationResult.from_tier(
+    ValidationTier.PARTIAL_SUCCESS, live_balance=False
+)
+
+MOCK_VALIDATION_RESULT_FULL = ValidationResult.from_tier(
+    ValidationTier.FULL_SUCCESS, live_balance=False
+)
+
+MOCK_VALIDATION_RESULT_FAILURE = ValidationResult.from_tier(
+    ValidationTier.FAILURE, live_balance=False
+)
+
 
 class TestScanStalledState:
-    """AC2/AC4: stalled state → [2/4] progress message emitted, parse_skanf called."""
+    """AC2/AC4/AC6/AC8/AC9/AC10: stalled state → full pipeline with validator call."""
 
-    def test_stalled_state_emits_stage_2_progress(self, monkeypatch):
+    def _mock_stalled(self, monkeypatch, validation_result=None):
+        """Helper: set up mocks for a complete stalled pipeline invocation."""
+        if validation_result is None:
+            validation_result = MOCK_VALIDATION_RESULT_PARTIAL
         monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
         monkeypatch.setattr(
             "specter.cli.run_skanf",
             _mock_run_skanf_returning(SkfnState.STALLED, STALL_RAW),
         )
         monkeypatch.setattr("specter.cli.parse_skanf", lambda *a, **kw: MOCK_CONTEXT)
+        monkeypatch.setattr("specter.cli.call_agent", lambda *a, **kw: MOCK_AGENT_CALLDATA)
+        monkeypatch.setattr("specter.cli.call_validator", lambda *a, **kw: validation_result)
+
+    def test_stalled_state_emits_stage_2_progress(self, monkeypatch):
+        self._mock_stalled(monkeypatch)
         result = runner.invoke(app, ["scan", VALID_ADDRESS])
         assert "[2/4] Parsing vulnerability report..." in result.stderr
 
-    def test_stalled_state_exits_zero(self, monkeypatch):
-        """Stalled path exits 0 after parser stage (stub for Story 3.1 agent call)."""
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-        monkeypatch.setattr(
-            "specter.cli.run_skanf",
-            _mock_run_skanf_returning(SkfnState.STALLED, STALL_RAW),
-        )
-        monkeypatch.setattr("specter.cli.parse_skanf", lambda *a, **kw: MOCK_CONTEXT)
+    def test_stalled_state_emits_stage_3_progress(self, monkeypatch):
+        """AC6: [3/4] Calling agent... must appear on stderr."""
+        self._mock_stalled(monkeypatch)
+        result = runner.invoke(app, ["scan", VALID_ADDRESS])
+        assert "[3/4] Calling agent..." in result.stderr
+
+    def test_stalled_state_emits_stage_4_progress(self, monkeypatch):
+        """AC8: [4/4] Validating exploit... must appear on stderr."""
+        self._mock_stalled(monkeypatch)
+        result = runner.invoke(app, ["scan", VALID_ADDRESS])
+        assert "[4/4] Validating exploit..." in result.stderr
+
+    def test_stalled_state_exits_two_for_partial_success(self, monkeypatch):
+        """AC10: AGENT_PROPOSED_UNVALIDATED → exit 2."""
+        self._mock_stalled(monkeypatch, MOCK_VALIDATION_RESULT_PARTIAL)
+        result = runner.invoke(app, ["scan", VALID_ADDRESS])
+        assert result.exit_code == 2
+
+    def test_stalled_state_exits_one_for_full_success(self, monkeypatch):
+        """AC10: VALIDATED_EXPLOIT → exit 1."""
+        self._mock_stalled(monkeypatch, MOCK_VALIDATION_RESULT_FULL)
+        result = runner.invoke(app, ["scan", VALID_ADDRESS])
+        assert result.exit_code == 1
+
+    def test_stalled_state_exits_zero_for_failure(self, monkeypatch):
+        """AC10: SKANF_DETECTED_UNEXPLOITED → exit 0."""
+        self._mock_stalled(monkeypatch, MOCK_VALIDATION_RESULT_FAILURE)
         result = runner.invoke(app, ["scan", VALID_ADDRESS])
         assert result.exit_code == 0
 
@@ -455,12 +506,68 @@ class TestScanStalledState:
         )
         mock_parse = MagicMock(return_value=MOCK_CONTEXT)
         monkeypatch.setattr("specter.cli.parse_skanf", mock_parse)
+        monkeypatch.setattr("specter.cli.call_agent", lambda *a, **kw: MOCK_AGENT_CALLDATA)
+        monkeypatch.setattr("specter.cli.call_validator", lambda *a, **kw: MOCK_VALIDATION_RESULT_PARTIAL)
         runner.invoke(app, ["scan", VALID_ADDRESS])
         mock_parse.assert_called_once()
         skanf_arg, target_arg = mock_parse.call_args.args
         assert skanf_arg.state == SkfnState.STALLED
         assert target_arg.value == VALID_ADDRESS
         assert "timeout" in mock_parse.call_args.kwargs
+
+    def test_stalled_state_calls_call_agent(self, monkeypatch):
+        """call_agent must be called once with correct context after parse_skanf (AC1)."""
+        from unittest.mock import MagicMock
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        monkeypatch.setattr(
+            "specter.cli.run_skanf",
+            _mock_run_skanf_returning(SkfnState.STALLED, STALL_RAW),
+        )
+        monkeypatch.setattr("specter.cli.parse_skanf", lambda *a, **kw: MOCK_CONTEXT)
+        mock_agent = MagicMock(return_value=MOCK_AGENT_CALLDATA)
+        monkeypatch.setattr("specter.cli.call_agent", mock_agent)
+        monkeypatch.setattr("specter.cli.call_validator", lambda *a, **kw: MOCK_VALIDATION_RESULT_PARTIAL)
+        runner.invoke(app, ["scan", VALID_ADDRESS])
+        mock_agent.assert_called_once()
+        context_arg = mock_agent.call_args.args[0]
+        assert context_arg is MOCK_CONTEXT
+        assert "timeout" in mock_agent.call_args.kwargs
+
+    def test_stalled_state_calls_call_validator(self, monkeypatch):
+        """call_validator must be called with agent_result and context (AC1)."""
+        from unittest.mock import MagicMock
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        monkeypatch.setattr(
+            "specter.cli.run_skanf",
+            _mock_run_skanf_returning(SkfnState.STALLED, STALL_RAW),
+        )
+        monkeypatch.setattr("specter.cli.parse_skanf", lambda *a, **kw: MOCK_CONTEXT)
+        monkeypatch.setattr("specter.cli.call_agent", lambda *a, **kw: MOCK_AGENT_CALLDATA)
+        mock_validator = MagicMock(return_value=MOCK_VALIDATION_RESULT_PARTIAL)
+        monkeypatch.setattr("specter.cli.call_validator", mock_validator)
+        runner.invoke(app, ["scan", VALID_ADDRESS])
+        mock_validator.assert_called_once()
+        agent_arg, context_arg = mock_validator.call_args.args
+        assert agent_arg is MOCK_AGENT_CALLDATA
+        assert context_arg is MOCK_CONTEXT
+        assert "timeout" in mock_validator.call_args.kwargs
+
+    def test_stalled_state_assembles_scan_result(self, monkeypatch):
+        """AC9: ScanResult assembled from SkfnOutput, SkfnContext, AgentCalldata, ValidationResult."""
+        self._mock_stalled(monkeypatch, MOCK_VALIDATION_RESULT_PARTIAL)
+        result = runner.invoke(app, ["scan", "--json", VALID_ADDRESS])
+        assert "agent_proposed_unvalidated" in result.output
+
+    def test_stalled_state_emits_footer(self, monkeypatch):
+        self._mock_stalled(monkeypatch)
+        result = runner.invoke(app, ["scan", VALID_ADDRESS])
+        assert "Specter scan complete" in result.stderr
+
+    def test_stalled_state_no_stub_message(self, monkeypatch):
+        """Stub message must be REMOVED from output."""
+        self._mock_stalled(monkeypatch)
+        result = runner.invoke(app, ["scan", VALID_ADDRESS])
+        assert "validator stage not yet implemented" not in result.stderr
 
     def test_stalled_parse_error_exits_3_with_error_format(self, monkeypatch):
         """SkfnParseError from parse_skanf → exit 3, ERROR [SkfnParseError] on stderr."""
@@ -478,3 +585,113 @@ class TestScanStalledState:
         result = runner.invoke(app, ["scan", VALID_ADDRESS])
         assert result.exit_code == 3
         assert "ERROR [SkfnParseError]" in result.stderr
+
+    def test_stalled_agent_error_exits_3_with_error_format(self, monkeypatch):
+        """AgentError from call_agent → exit 3, ERROR [AgentError] on stderr."""
+        from unittest.mock import MagicMock
+        from specter.errors import AgentError
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        monkeypatch.setattr(
+            "specter.cli.run_skanf",
+            _mock_run_skanf_returning(SkfnState.STALLED, STALL_RAW),
+        )
+        monkeypatch.setattr("specter.cli.parse_skanf", lambda *a, **kw: MOCK_CONTEXT)
+        mock_agent = MagicMock(side_effect=AgentError("Claude API returned HTTP 429: Rate limited"))
+        monkeypatch.setattr("specter.cli.call_agent", mock_agent)
+        result = runner.invoke(app, ["scan", VALID_ADDRESS])
+        assert result.exit_code == 3
+        assert "ERROR [AgentError]" in result.stderr
+        assert "429" in result.stderr
+
+    def test_stalled_validator_error_exits_3_with_error_format(self, monkeypatch):
+        """SprecterValidationError from call_validator → exit 3, ERROR [SprecterValidationError]."""
+        from unittest.mock import MagicMock
+        from specter.errors import SprecterValidationError
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        monkeypatch.setattr(
+            "specter.cli.run_skanf",
+            _mock_run_skanf_returning(SkfnState.STALLED, STALL_RAW),
+        )
+        monkeypatch.setattr("specter.cli.parse_skanf", lambda *a, **kw: MOCK_CONTEXT)
+        monkeypatch.setattr("specter.cli.call_agent", lambda *a, **kw: MOCK_AGENT_CALLDATA)
+        mock_validator = MagicMock(
+            side_effect=SprecterValidationError("SKANF validation container exited with code 1")
+        )
+        monkeypatch.setattr("specter.cli.call_validator", mock_validator)
+        result = runner.invoke(app, ["scan", VALID_ADDRESS])
+        assert result.exit_code == 3
+        assert "ERROR [SprecterValidationError]" in result.stderr
+
+
+class TestStalledPipelineIntegration:
+    """AC7/AC8: full STALLED pipeline end-to-end — ScanResult assembly and exit codes."""
+
+    def _setup(self, monkeypatch, validation_result):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        monkeypatch.setattr(
+            "specter.cli.run_skanf",
+            _mock_run_skanf_returning(SkfnState.STALLED, STALL_RAW),
+        )
+        monkeypatch.setattr("specter.cli.parse_skanf", lambda *a, **kw: MOCK_CONTEXT)
+        monkeypatch.setattr("specter.cli.call_agent", lambda *a, **kw: MOCK_AGENT_CALLDATA)
+        monkeypatch.setattr("specter.cli.call_validator", lambda *a, **kw: validation_result)
+
+    def test_full_success_live_balance_true_exits_one(self, monkeypatch):
+        """AC7: full_success with live_balance=True → VALIDATED_EXPLOIT, exit 1."""
+        vr = ValidationResult.from_tier(ValidationTier.FULL_SUCCESS, live_balance=True)
+        self._setup(monkeypatch, vr)
+        result = runner.invoke(app, ["scan", VALID_ADDRESS])
+        assert result.exit_code == 1
+
+    def test_full_success_scan_result_status_validated_exploit(self, monkeypatch):
+        """AC7: validation_status=VALIDATED_EXPLOIT in assembled ScanResult JSON."""
+        vr = ValidationResult.from_tier(ValidationTier.FULL_SUCCESS, live_balance=True)
+        self._setup(monkeypatch, vr)
+        result = runner.invoke(app, ["scan", "--json", VALID_ADDRESS])
+        assert "validated_exploit" in result.output
+
+    def test_partial_success_exits_two(self, monkeypatch):
+        """AC8: partial_success → AGENT_PROPOSED_UNVALIDATED, exit 2."""
+        vr = ValidationResult.from_tier(ValidationTier.PARTIAL_SUCCESS, live_balance=False)
+        self._setup(monkeypatch, vr)
+        result = runner.invoke(app, ["scan", VALID_ADDRESS])
+        assert result.exit_code == 2
+
+    def test_partial_success_scan_result_status(self, monkeypatch):
+        """AC8: AGENT_PROPOSED_UNVALIDATED in JSON output."""
+        vr = ValidationResult.from_tier(ValidationTier.PARTIAL_SUCCESS, live_balance=False)
+        self._setup(monkeypatch, vr)
+        result = runner.invoke(app, ["scan", "--json", VALID_ADDRESS])
+        assert "agent_proposed_unvalidated" in result.output
+
+    def test_failure_exits_zero(self, monkeypatch):
+        """AC8: failure → SKANF_DETECTED_UNEXPLOITED, exit 0."""
+        vr = ValidationResult.from_tier(ValidationTier.FAILURE, live_balance=False)
+        self._setup(monkeypatch, vr)
+        result = runner.invoke(app, ["scan", VALID_ADDRESS])
+        assert result.exit_code == 0
+
+    def test_failure_scan_result_status(self, monkeypatch):
+        """AC8: SKANF_DETECTED_UNEXPLOITED in JSON output."""
+        vr = ValidationResult.from_tier(ValidationTier.FAILURE, live_balance=False)
+        self._setup(monkeypatch, vr)
+        result = runner.invoke(app, ["scan", "--json", VALID_ADDRESS])
+        assert "skanf_detected_unexploited" in result.output
+
+    def test_live_balance_true_propagated_to_scan_result(self, monkeypatch):
+        """AC7: live_balance=True propagates to ScanResult.finding.validation_result.live_balance."""
+        import json
+        vr = ValidationResult.from_tier(ValidationTier.FULL_SUCCESS, live_balance=True)
+        self._setup(monkeypatch, vr)
+        result = runner.invoke(app, ["scan", "--json", VALID_ADDRESS])
+        data = json.loads(result.stdout)
+        assert data["finding"]["validation_result"]["live_balance"] is True
+
+    def test_live_balance_false_propagated_to_scan_result(self, monkeypatch):
+        """AC7: live_balance=False propagates to ScanResult.finding.validation_result.live_balance."""
+        import json
+        vr = ValidationResult.from_tier(ValidationTier.PARTIAL_SUCCESS, live_balance=False)
+        self._setup(monkeypatch, vr)
+        result = runner.invoke(app, ["scan", "--json", VALID_ADDRESS])
+        data = json.loads(result.stdout)
+        assert data["finding"]["validation_result"]["live_balance"] is False

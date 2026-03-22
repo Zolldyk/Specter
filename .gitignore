@@ -9,6 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
+# Local secrets — never commit
+.env
+
 # BMAD and agent tooling
 _bmad/
 _bmad-output/

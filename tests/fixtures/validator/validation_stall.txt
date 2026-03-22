@@ -1,0 +1,3 @@
+Running gigahorse.py
+Yes
+INFO | greed.TAC.flow_ops | Calling contract <SYMBOLIC> (134_1)

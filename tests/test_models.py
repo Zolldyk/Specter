@@ -117,6 +117,41 @@ def test_agentcalldata_normalizes_origin() -> None:
     assert m.origin == "0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe"
 
 
+def test_agentcalldata_value_defaults_to_zero() -> None:
+    m = AgentCalldata(
+        calldata="0xdeadbeef",
+        target_address="0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe",
+        caller="0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe",
+        origin="0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe",
+    )
+    assert m.value == 0
+
+
+def test_agentcalldata_value_accepts_nonzero() -> None:
+    m = AgentCalldata(
+        calldata="0xdeadbeef",
+        target_address="0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe",
+        caller="0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe",
+        origin="0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe",
+        value=1_000_000_000_000_000_000,
+    )
+    assert m.value == 1_000_000_000_000_000_000
+
+
+def test_agentcalldata_value_present_in_json() -> None:
+    m = AgentCalldata(
+        calldata="0xdeadbeef",
+        target_address="0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe",
+        caller="0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe",
+        origin="0xde0B295669a9FD93d5F28D9Ec85E40f4cb697BAe",
+        value=42,
+    )
+    import json
+    data = json.loads(m.model_dump_json())
+    assert "value" in data
+    assert data["value"] == 42
+
+
 # ---------------------------------------------------------------------------
 # AC3 — ScanResult JSON schema
 # ---------------------------------------------------------------------------
@@ -256,10 +291,10 @@ def test_validationresult_from_tier_derives_status() -> None:
     assert r.validation_status == ValidationStatus.VALIDATED_EXPLOIT
 
     r = ValidationResult.from_tier(ValidationTier.PARTIAL_SUCCESS, live_balance=False)
-    assert r.validation_status == ValidationStatus.SKANF_DETECTED_UNEXPLOITED
+    assert r.validation_status == ValidationStatus.AGENT_PROPOSED_UNVALIDATED
 
     r = ValidationResult.from_tier(ValidationTier.FAILURE, live_balance=False)
-    assert r.validation_status == ValidationStatus.CLEAN
+    assert r.validation_status == ValidationStatus.SKANF_DETECTED_UNEXPLOITED
 
 
 def test_validationresult_rejects_inconsistent_tier_status() -> None:

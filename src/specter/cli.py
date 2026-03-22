@@ -1,7 +1,30 @@
 import datetime
+import os
 import re
 import sys
 import time
+
+
+def _load_dotenv() -> None:
+    """Load .env from the current working directory or project root, if present."""
+    for candidate in (os.path.join(os.getcwd(), ".env"), os.path.join(os.path.dirname(__file__), "..", "..", ".env")):
+        candidate = os.path.abspath(candidate)
+        if not os.path.isfile(candidate):
+            continue
+        with open(candidate) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip()
+                if key and key not in os.environ:
+                    os.environ[key] = value
+        break
+
+
+_load_dotenv()
 
 import typer
 
@@ -11,6 +34,7 @@ from specter.config import (
     MODEL_VERSION,
     SKANF_IMAGE_DIGEST,
     check_dependencies,
+    get_active_model_version,
     validate_env,
 )
 from specter.errors import SprecterError, ConfigError, SkfnContainerError
@@ -22,10 +46,15 @@ from specter.models import (
     ScanTarget,
     SkfnOutput,
     SkfnState,
+    ValidationResult,
     ValidationStatus,
 )
+from specter.output.json_out import render_json
+from specter.output.markdown import render_markdown
+from specter.pipeline.agent import call_agent
 from specter.pipeline.parser import parse_skanf
 from specter.pipeline.runner import run_skanf
+from specter.pipeline.validator import call_validator
 
 app = typer.Typer(rich_markup_mode=None)
 
@@ -60,7 +89,7 @@ def _assemble_clean_result(scan_target: ScanTarget, runtime: float) -> ScanResul
         contract_address=contract_addr,
         scan_timestamp=datetime.datetime.now(datetime.timezone.utc),
         skanf_version_digest=_SKANF_DIGEST,
-        model_version=MODEL_VERSION,
+        model_version=get_active_model_version(),
         validation_status=ValidationStatus.CLEAN,
         finding=None,
         runtime_seconds=runtime,
@@ -91,7 +120,7 @@ def _assemble_exploit_generated_result(
         contract_address=contract_addr,
         scan_timestamp=datetime.datetime.now(datetime.timezone.utc),
         skanf_version_digest=_SKANF_DIGEST,
-        model_version=MODEL_VERSION,
+        model_version=get_active_model_version(),
         validation_status=ValidationStatus.VALIDATED_EXPLOIT,
         finding=finding,
         runtime_seconds=runtime,
@@ -99,14 +128,24 @@ def _assemble_exploit_generated_result(
     )
 
 
-def _emit_result(result: ScanResult, *, json_output: bool, output_path: str | None) -> None:
-    if json_output or output_path:
-        json_str = result.model_dump_json(indent=2)
-        if json_output:
-            typer.echo(json_str)
-        if output_path:
-            with open(output_path, "w") as f:
-                f.write(json_str)
+def _emit_result(
+    result: ScanResult,
+    *,
+    json_output: bool,
+    output_path: str | None,
+    verbose: bool = False,
+    color: bool = False,
+) -> None:
+    if json_output:
+        typer.echo(render_json(result))
+    else:
+        typer.echo(render_markdown(result, verbose=verbose, color=color))
+    if output_path:
+        with open(output_path, "w") as f:
+            if json_output:
+                f.write(render_json(result))
+            else:
+                f.write(render_markdown(result, verbose=verbose))
 
 
 def _parse_target(target_str: str) -> ScanTarget:
@@ -145,6 +184,7 @@ def scan(
     try:
         scan_target = _parse_target(target)
 
+        stdout_is_tty = sys.stdout.isatty()
         is_tty = sys.stderr.isatty()
         if is_tty:
             typer.echo("[1/4] Running SKANF analysis...", err=True, nl=False)
@@ -160,14 +200,14 @@ def scan(
         if skanf_output.state == SkfnState.CLEAN:
             scan_runtime = time.monotonic() - (deadline - timeout)
             result = _assemble_clean_result(scan_target, scan_runtime)
-            _emit_result(result, json_output=json_output, output_path=output)
+            _emit_result(result, json_output=json_output, output_path=output, verbose=verbose, color=stdout_is_tty)
             _emit_scan_footer(scan_target.value, result.validation_status.value, scan_runtime)
             raise typer.Exit(code=EXIT_CODES[result.validation_status])
 
         elif skanf_output.state == SkfnState.EXPLOIT_GENERATED:
             scan_runtime = time.monotonic() - (deadline - timeout)
             result = _assemble_exploit_generated_result(scan_target, skanf_output, scan_runtime)
-            _emit_result(result, json_output=json_output, output_path=output)
+            _emit_result(result, json_output=json_output, output_path=output, verbose=verbose, color=stdout_is_tty)
             _emit_scan_footer(scan_target.value, result.validation_status.value, scan_runtime)
             raise typer.Exit(code=EXIT_CODES[result.validation_status])
 
@@ -179,11 +219,40 @@ def scan(
             context = parse_skanf(skanf_output, scan_target, timeout=deadline - time.monotonic())
             if is_tty:
                 typer.echo("\r[2/4] Parsing vulnerability report... done", err=True)
-            # TODO: Story 3.1 — call_agent(context, timeout=deadline - time.monotonic())
-            # from specter.pipeline.agent import call_agent
-            # agent_result = call_agent(context, timeout=deadline - time.monotonic())
-            typer.echo("\nParser stage complete — agent stage not yet implemented (Story 3.1)", err=True)
-            raise typer.Exit(code=0)  # temporary stub exit
+            if is_tty:
+                typer.echo("[3/4] Calling agent...", err=True, nl=False)
+            else:
+                typer.echo("[3/4] Calling agent...", err=True)
+            agent_result = call_agent(context, timeout=deadline - time.monotonic())
+            if is_tty:
+                typer.echo("\r[3/4] Calling agent... done", err=True)
+            if is_tty:
+                typer.echo("[4/4] Validating exploit...", err=True, nl=False)
+            else:
+                typer.echo("[4/4] Validating exploit...", err=True)
+            validation_result = call_validator(agent_result, context, timeout=deadline - time.monotonic())
+            if is_tty:
+                typer.echo("\r[4/4] Validating exploit... done", err=True)
+
+            scan_runtime = time.monotonic() - (deadline - timeout)
+            contract_addr = scan_target.value if scan_target.is_address else "0x" + "0" * 40
+            finding = Finding(
+                exploit_calldata=agent_result,
+                validation_result=validation_result,
+            )
+            result = ScanResult(
+                contract_address=contract_addr,
+                scan_timestamp=datetime.datetime.now(datetime.timezone.utc),
+                skanf_version_digest=_SKANF_DIGEST,
+                model_version=get_active_model_version(),
+                validation_status=validation_result.validation_status,
+                finding=finding,
+                runtime_seconds=scan_runtime,
+                error=None,
+            )
+            _emit_result(result, json_output=json_output, output_path=output, verbose=verbose, color=stdout_is_tty)
+            _emit_scan_footer(scan_target.value, result.validation_status.value, scan_runtime)
+            raise typer.Exit(code=EXIT_CODES[result.validation_status])
 
     except SprecterError as e:
         typer.echo(f"ERROR [{type(e).__name__}]: {e}", err=True)

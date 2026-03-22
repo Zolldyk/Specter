@@ -18,6 +18,12 @@ SKANF_IMAGE_DIGEST = "dockerofsyang/skanf@sha256:5ef0297fd41b8e7e94f8e4fdc0c0a0d
 # NFR13: Claude model pinned by explicit version string
 MODEL_VERSION = "claude-sonnet-4-6"
 
+# OpenAI model used when OPENAI_API_KEY is set and ANTHROPIC_API_KEY is absent/invalid
+OPENAI_MODEL_VERSION = "gpt-4o"
+
+# Gemini model used when GEMINI_API_KEY is set
+GEMINI_MODEL_VERSION = "gemini-2.5-flash"
+
 # NFR1: Default scan timeout ceiling
 DEFAULT_TIMEOUT_SECONDS = 600
 
@@ -40,16 +46,34 @@ class CheckItem(NamedTuple):
 _logger = logging.getLogger(__name__)
 
 
+def get_active_model_version() -> str:
+    """Return the model version string for whichever AI provider key is active.
+
+    Priority matches call_agent(): ANTHROPIC_API_KEY → OPENAI_API_KEY → GEMINI_API_KEY.
+    """
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return MODEL_VERSION
+    if os.environ.get("OPENAI_API_KEY"):
+        return OPENAI_MODEL_VERSION
+    if os.environ.get("GEMINI_API_KEY"):
+        return GEMINI_MODEL_VERSION
+    return MODEL_VERSION  # fallback — validate_env() will catch the missing key
+
+
 def validate_env() -> None:
     """Validate required environment variables. Call third in CLI startup sequence.
 
     Raises:
-        ConfigError: If ANTHROPIC_API_KEY is not set.
+        ConfigError: If neither ANTHROPIC_API_KEY nor OPENAI_API_KEY is set.
     """
-    if not os.environ.get("ANTHROPIC_API_KEY"):
+    if (
+        not os.environ.get("ANTHROPIC_API_KEY")
+        and not os.environ.get("OPENAI_API_KEY")
+        and not os.environ.get("GEMINI_API_KEY")
+    ):
         raise ConfigError(
-            "ANTHROPIC_API_KEY is not set. "
-            "Export it before running specter: export ANTHROPIC_API_KEY=your_key_here"
+            "No AI provider API key set. "
+            "Export ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY before running specter."
         )
 
     if not os.environ.get("ETHERSCAN_API_KEY"):
@@ -66,14 +90,28 @@ def check_dependencies() -> list[CheckItem]:
     """
     items: list[CheckItem] = []
 
-    # ANTHROPIC_API_KEY (required)
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        items.append(CheckItem(True, "ANTHROPIC_API_KEY", "set"))
+    # AI provider key — at least one of ANTHROPIC_API_KEY or OPENAI_API_KEY required
+    has_anthropic = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    has_openai = bool(os.environ.get("OPENAI_API_KEY"))
+    if has_anthropic:
+        items.append(CheckItem(True, "ANTHROPIC_API_KEY", "set", required=False))
     else:
-        items.append(CheckItem(
-            False, "ANTHROPIC_API_KEY", "not set",
-            fix="export ANTHROPIC_API_KEY=your_key_here",
-        ))
+        items.append(CheckItem(False, "ANTHROPIC_API_KEY", "not set",
+            fix="export ANTHROPIC_API_KEY=your_key_here", required=False))
+    if has_openai:
+        items.append(CheckItem(True, "OPENAI_API_KEY", "set", required=False))
+    else:
+        items.append(CheckItem(False, "OPENAI_API_KEY", "not set",
+            fix="export OPENAI_API_KEY=your_key_here", required=False))
+    has_gemini = bool(os.environ.get("GEMINI_API_KEY"))
+    if has_gemini:
+        items.append(CheckItem(True, "GEMINI_API_KEY", "set", required=False))
+    else:
+        items.append(CheckItem(False, "GEMINI_API_KEY", "not set",
+            fix="export GEMINI_API_KEY=your_key_here", required=False))
+    if not has_anthropic and not has_openai and not has_gemini:
+        items.append(CheckItem(False, "AI provider key", "no provider key set",
+            fix="export ANTHROPIC_API_KEY=... or OPENAI_API_KEY=... or GEMINI_API_KEY=..."))
 
     # ETHERSCAN_API_KEY (optional — missing does not cause exit 3)
     if os.environ.get("ETHERSCAN_API_KEY"):

@@ -8,6 +8,7 @@ import httpx
 import json
 import logging
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -15,6 +16,10 @@ import time
 from specter.config import DEFAULT_TIMEOUT_SECONDS, SKANF_IMAGE_DIGEST
 from specter.errors import ConfigError, SkfnContainerError
 from specter.models import ScanTarget, SkfnOutput, SkfnState
+
+_RESOURCES_DIR = os.path.join(os.path.dirname(__file__), "..", "resources")
+_ARM64_PATCH = os.path.join(_RESOURCES_DIR, "gigahorse_ops_arm64_patch.py")
+_FIND_CALL_PCS_SCRIPT = os.path.join(_RESOURCES_DIR, "find_call_pcs.py")
 
 logger = logging.getLogger(__name__)
 
@@ -178,18 +183,24 @@ def run_skanf(target: ScanTarget, *, timeout: float | None = None) -> SkfnOutput
             with open(hex_path, "w") as f:
                 f.write(bytecode)  # no 0x prefix — SKANF requires raw hex
 
-            phase1_timeout = max(30, int(effective_timeout * 0.6))
+            # Copy helper scripts into workdir so Docker can access them
+            shutil.copy(_FIND_CALL_PCS_SCRIPT, os.path.join(workdir, "_find_call_pcs.py"))
+
+            # Budget: 40% Gigahorse, 50% directed greed (≤6 attempts × 60s), 10% fallback
+            phase1_timeout = max(30, int(effective_timeout * 0.4))
+            per_find_timeout = min(60, max(20, int(effective_timeout * 0.08)))
             address_flag = f"--address {target.value}" if target.is_address else ""
 
             bash_cmd = (
                 f"cd /workdir && "
                 f"analyze_hex.sh --file contract.hex --timeout {phase1_timeout} && "
-                f"KEY=$(jq -r '.[0].key_statement // empty' vulnerability.json 2>/dev/null) && "
-                f"if [ -n \"$KEY\" ]; then "
-                f"  greed /workdir --find \"$KEY\" {address_flag}; "
-                f"else "
-                f"  greed /workdir {address_flag}; "
-                f"fi"
+                f"CALL_IDS=$(python3 /workdir/_find_call_pcs.py 2>/dev/null); "
+                f"found=0; "
+                f"for callid in $CALL_IDS; do "
+                f"  output=$(timeout {per_find_timeout} greed /workdir --find \"$callid\" {address_flag} 2>&1); "
+                f"  if echo \"$output\" | grep -q 'CALLDATA:'; then echo \"$output\"; found=1; break; fi; "
+                f"done; "
+                f"if [ $found -eq 0 ]; then greed /workdir {address_flag}; fi"
             )
 
             cmd = [
@@ -197,8 +208,9 @@ def run_skanf(target: ScanTarget, *, timeout: float | None = None) -> SkfnOutput
                 "--platform", "linux/amd64",
                 "-v", f"{workdir}:/workdir",
                 "-w", "/workdir",
+                "-v", f"{os.path.abspath(_ARM64_PATCH)}:/opt/greed/greed/TAC/gigahorse_ops.py:ro",
                 SKANF_IMAGE_DIGEST,
-                "bash", "-c", bash_cmd,
+                "bash", "-l", "-c", bash_cmd,
             ]
 
             proc = subprocess.run(

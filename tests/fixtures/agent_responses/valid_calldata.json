@@ -1,0 +1,11 @@
+{
+  "type": "tool_use",
+  "name": "submit_calldata",
+  "input": {
+    "calldata": "0x1cff79cd000000000000000000000000deadbeef",
+    "target_address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "value": 0,
+    "caller": "0x0000000000000000000000000000000000000001",
+    "origin": "0x0000000000000000000000000000000000000001"
+  }
+}

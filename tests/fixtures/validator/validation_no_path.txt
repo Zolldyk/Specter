@@ -1,0 +1,3 @@
+Running gigahorse.py
+Yes
+FATAL | greed | No paths found

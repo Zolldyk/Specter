@@ -1,0 +1,4 @@
+Running gigahorse.py
+Yes
+INFO | greed | Found State 1 at 0x76
+INFO | greed | CALLDATA: 1cff79cd000000000000000000000000deadbeefdeadbeefdeadbeefdeadbeef
