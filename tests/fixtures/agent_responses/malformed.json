@@ -1,0 +1,7 @@
+{
+  "type": "tool_use",
+  "name": "submit_calldata",
+  "input": {
+    "calldata": "0x1cff79cd"
+  }
+}

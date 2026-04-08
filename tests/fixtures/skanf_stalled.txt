@@ -1,0 +1,40 @@
+# SKANF STALLED OUTPUT FIXTURE
+# Contract: ForwarderA — execute(address target, bytes calldata data) → target.call(data)
+# Contract bytecode selector: 0x1cff79cd
+# Pipeline: analyze_hex.sh (Phase 1) + greed without --find (Phase 2, FREE-EXPLORATION MODE)
+#
+# ⚠️  FIXTURE MODE: FREE-EXPLORATION STALL (not validation-mode stall)
+# This fixture captures greed run WITHOUT --find, encountering a symbolic CALL during
+# unconstrained path exploration. vulnerability.json is [] (no Gigahorse detection).
+#
+# VALIDATION-MODE STALL (Story 2.4 context): occurs when greed IS given --find <callPC>
+# (i.e., vulnerability.json is non-empty and has a key_statement) and greed still hits
+# Calling contract <SYMBOLIC>. Both modes emit the same log line, but in different
+# pipeline states. Story 2.4 parser must use vulnerability.json emptiness to distinguish.
+#
+# NOTE: "Stall" in SKANF means greed reaches the CALL instruction but the target
+# address is SYMBOLIC (attacker-controlled but unsolvable in the given context).
+# This is the real output format from greed — NOT the paper's Figure 3 structure.
+# The paper's "Figure 3" fields map to greed output as documented in skanf-interface.md.
+#
+# Phase 1 stdout (analyze_hex.sh):
+Running gigahorse.py
+Yes
+#
+# Phase 2 stderr (greed symbolic execution, no --find flag):
+INFO | greed.TAC.flow_ops | Calling contract <SYMBOLIC> (134_1)
+#
+# Interpretation of stall fields (paper Figure 3 equivalents):
+#   callPC            → statement 0x76 (block 0x86 = decimal 134, context 1)
+#   symbolic calldata → <SYMBOLIC> — call target is attacker-controlled, unresolved
+#   tainted bytes     → NOT in output (internal to solver state)
+#   controllability   → NOT in output (internal to solver state)
+#   block height      → NOT in output unless Web3 connected (symbolic NUMBER)
+#   token balance     → NOT in output (symbolic BALANCE_<xid>)
+#   contract address  → 0xDeadDeadDeadDeadDeadDeadDeadDeadDeadDead (--address flag)
+#
+# vulnerability.json output:
+# []
+# NOTE: In production with a truly vulnerable contract, vulnerability.json would contain:
+# [{"vulnerability_type":"ArbitraryCall","confidence":"HIGH","visibility":"PUBLIC",
+#   "key_statement":"0x76","key_selector":"0x1cff79cd",...}]

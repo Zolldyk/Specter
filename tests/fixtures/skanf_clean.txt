@@ -1,0 +1,15 @@
+# SKANF CLEAN OUTPUT FIXTURE
+# Contract: Simple get/set storage (no external CALL, no vulnerability)
+# Pipeline: analyze_hex.sh (Phase 1) + greed (Phase 2)
+# Expected: no vulnerability detected, empty vulnerability.json
+# Contract address: 0x1234567890AbcdEF1234567890AbCdef12345678
+#
+# Phase 1 stdout (analyze_hex.sh):
+Running gigahorse.py
+Yes
+#
+# Phase 2 stderr (greed symbolic execution):
+# [no output — clean contract, simulation completes without finding vulnerable CALL]
+#
+# vulnerability.json output:
+# []
